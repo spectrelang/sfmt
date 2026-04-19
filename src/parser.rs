@@ -300,9 +300,16 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<Node, String> {
         let base = if let Some(Token::Ident(name)) = self.current() {
-            let n = name.clone();
-            self.advance();
-            Node::Ident(n)
+            if name == "ref" {
+                self.advance();
+                let ty = self.parse_type()?;
+                let ty_str = self.node_type_to_string(&ty);
+                Node::Ident(format!("ref {}", ty_str))
+            } else {
+                let n = name.clone();
+                self.advance();
+                Node::Ident(n)
+            }
         } else if self.match_token(&Token::Mut) {
             let ty = self.parse_type()?;
             let ty_str = self.node_type_to_string(&ty);
@@ -354,6 +361,11 @@ impl Parser {
         let mut fields = Vec::new();
 
         while self.current() != Some(&Token::RBrace) && self.current() != Some(&Token::Eof) {
+            self.skip_comments();
+            if self.current() == Some(&Token::RBrace) {
+                break;
+            }
+
             let field_name = if let Some(Token::Ident(n)) = self.current() {
                 let n = n.clone();
                 self.advance();
@@ -364,6 +376,7 @@ impl Parser {
 
             self.expect_token(Token::Colon)?;
             let field_type = self.parse_type()?;
+            self.skip_comments();
 
             fields.push((field_name, field_type));
         }
@@ -562,6 +575,7 @@ impl Parser {
                 Ok(Node::Break)
             }
             Some(Token::Assert) => self.parse_assert(),
+            Some(Token::Match) => self.parse_match(),
             Some(Token::LBrace) => self.parse_block(),
             _ => {
                 let expr = self.parse_expr()?;
@@ -659,6 +673,82 @@ impl Parser {
         self.match_token(&Token::Semicolon);
 
         Ok(Node::Return(value))
+    }
+
+    fn parse_match(&mut self) -> Result<Node, String> {
+        self.expect_token(Token::Match)?;
+        let expr = Box::new(self.parse_expr()?);
+        self.expect_token(Token::LBrace)?;
+
+        let mut arms = Vec::new();
+
+        while self.current() != Some(&Token::RBrace) && self.current() != Some(&Token::Eof) {
+            self.skip_comments();
+            if self.current() == Some(&Token::RBrace) {
+                break;
+            }
+
+            let (pattern, bindings) = self.parse_match_pattern()?;
+            self.expect_token(Token::Arrow)?;
+            let body = Box::new(self.parse_block()?);
+            arms.push((pattern, bindings, body));
+        }
+
+        self.expect_token(Token::RBrace)?;
+        Ok(Node::Match { expr, arms })
+    }
+
+    fn parse_match_pattern(&mut self) -> Result<(String, Vec<String>), String> {
+        let mut pattern = String::new();
+        let mut bindings = Vec::new();
+
+        match self.current() {
+            Some(Token::Some) => {
+                pattern.push_str("some");
+                self.advance();
+                if let Some(Token::Ident(bind)) = self.current() {
+                    let b = bind.clone();
+                    pattern.push(' ');
+                    pattern.push_str(&b);
+                    bindings.push(b);
+                    self.advance();
+                }
+            }
+            Some(Token::None) => {
+                pattern.push_str("none");
+                self.advance();
+            }
+            Some(Token::Ok) => {
+                pattern.push_str("ok");
+                self.advance();
+                if let Some(Token::Ident(bind)) = self.current() {
+                    let b = bind.clone();
+                    pattern.push(' ');
+                    pattern.push_str(&b);
+                    bindings.push(b);
+                    self.advance();
+                }
+            }
+            Some(Token::Err) => {
+                pattern.push_str("err");
+                self.advance();
+                if let Some(Token::Ident(bind)) = self.current() {
+                    let b = bind.clone();
+                    pattern.push(' ');
+                    pattern.push_str(&b);
+                    bindings.push(b);
+                    self.advance();
+                }
+            }
+            Some(Token::Ident(name)) => {
+                let n = name.clone();
+                pattern.push_str(&n);
+                self.advance();
+            }
+            _ => return Err(format!("Expected match pattern, got {:?}", self.current())),
+        }
+
+        Ok((pattern, bindings))
     }
 
     fn parse_assert(&mut self) -> Result<Node, String> {
@@ -815,8 +905,16 @@ impl Parser {
                 while self.current() != Some(&Token::RBracket)
                     && self.current() != Some(&Token::Eof)
                 {
+                    self.skip_comments();
+                    if self.current() == Some(&Token::RBracket) {
+                        break;
+                    }
                     if !elements.is_empty() {
                         self.expect_token(Token::Comma)?;
+                        self.skip_comments();
+                        if self.current() == Some(&Token::RBracket) {
+                            break;
+                        }
                     }
                     elements.push(self.parse_expr()?);
                 }
@@ -850,6 +948,35 @@ impl Parser {
                 self.expect_token(Token::RBrace)?;
                 Ok(Node::Struct(fields))
             }
+            Some(Token::At) => {
+                self.advance();
+                let builtin_name = if let Some(Token::Ident(n)) = self.current() {
+                    let name = format!("@{}", n);
+                    self.advance();
+                    name
+                } else {
+                    return Err("Expected builtin name after @".to_string());
+                };
+
+                if self.match_token(&Token::LParen) {
+                    let mut args = Vec::new();
+                    while self.current() != Some(&Token::RParen)
+                        && self.current() != Some(&Token::Eof)
+                    {
+                        if !args.is_empty() {
+                            self.expect_token(Token::Comma)?;
+                        }
+                        args.push(self.parse_expr()?);
+                    }
+                    self.expect_token(Token::RParen)?;
+                    Ok(Node::Call {
+                        func: Box::new(Node::Ident(builtin_name)),
+                        args,
+                    })
+                } else {
+                    Ok(Node::Ident(builtin_name))
+                }
+            }
             _ => Err(format!("Unexpected token in expression: {:?}", self.current())),
         }
     }
@@ -863,9 +990,10 @@ impl Parser {
             Token::Ampersand => 5,
             Token::EqualEq | Token::NotEq => 6,
             Token::Lt | Token::Gt | Token::LtEq | Token::GtEq => 7,
-            Token::Plus | Token::Minus => 8,
-            Token::Star | Token::Slash | Token::Percent => 9,
-            _ => 0,
+            Token::LtLt | Token::GtGt => 8,
+            Token::Plus | Token::Minus => 9,
+            Token::Star | Token::Slash | Token::Percent => 10,
+            _ => -1,
         }
     }
 
@@ -891,6 +1019,8 @@ impl Parser {
             Token::Bang => Ok("!".to_string()),
             Token::Tilde => Ok("~".to_string()),
             Token::Question => Ok("?".to_string()),
+            Token::LtLt => Ok("<<".to_string()),
+            Token::GtGt => Ok(">>".to_string()),
             _ => Err(format!("Not an operator: {:?}", token)),
         }
     }

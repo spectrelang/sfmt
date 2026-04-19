@@ -58,6 +58,8 @@ pub enum Token {
     Gt,        // >
     LtEq,      // <=
     GtEq,      // >=
+    LtLt,      // <<
+    GtGt,      // >>
     Plus,
     Minus,
     Star,
@@ -199,6 +201,22 @@ impl Lexer {
 
     fn read_number(&mut self) -> String {
         let mut result = String::new();
+
+        if self.current() == Some('0') && (self.peek(1) == Some('x') || self.peek(1) == Some('X')) {
+            result.push('0');
+            self.advance();
+            result.push(self.current().unwrap());
+            self.advance();
+            while let Some(ch) = self.current() {
+                if ch.is_ascii_hexdigit() || ch == '_' {
+                    result.push(ch);
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            return result;
+        }
 
         while let Some(ch) = self.current() {
             if ch.is_numeric() || ch == '.' || ch == '_' {
@@ -347,6 +365,9 @@ impl Lexer {
                 if self.current() == Some('=') {
                     self.advance();
                     Token::LtEq
+                } else if self.current() == Some('<') {
+                    self.advance();
+                    Token::LtLt
                 } else {
                     Token::Lt
                 }
@@ -356,6 +377,9 @@ impl Lexer {
                 if self.current() == Some('=') {
                     self.advance();
                     Token::GtEq
+                } else if self.current() == Some('>') {
+                    self.advance();
+                    Token::GtGt
                 } else {
                     Token::Gt
                 }

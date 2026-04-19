@@ -246,17 +246,21 @@ impl Formatter {
                 self.format_node(then_body);
 
                 for (elif_cond, elif_body) in elif_parts {
-                    self.output.push_str(&self.push_indent("} elif "));
+                    if self.output.ends_with('\n') {
+                        self.output.pop();
+                    }
+                    self.output.push_str(" elif ");
                     self.output.push_str(&self.node_to_string(elif_cond));
-                    self.output.push_str(" ");
+                    self.output.push(' ');
                     self.format_node(elif_body);
                 }
 
                 if let Some(else_bl) = else_body {
-                    self.output.push_str(&self.push_indent("} else "));
+                    if self.output.ends_with('\n') {
+                        self.output.pop();
+                    }
+                    self.output.push_str(" else ");
                     self.format_node(else_bl);
-                } else {
-                    self.output.push_str(&self.push_indent("}\n"));
                 }
             }
             Node::For {
