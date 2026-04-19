@@ -21,6 +21,20 @@ fn node_kind(node: &Node) -> &'static str {
     }
 }
 
+fn emit_aligned_comment_pairs(output: &mut String, pairs: &[(String, String)]) {
+    let max_len = pairs.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    for (line, comment) in pairs {
+        output.push_str(line);
+        let padding = max_len - line.len();
+        for _ in 0..padding {
+            output.push(' ');
+        }
+        output.push_str(" //");
+        output.push_str(comment);
+        output.push('\n');
+    }
+}
+
 fn spacing_between(prev: &str, cur: &str) -> usize {
     match (prev, cur) {
         ("fn", "fn") => 1,
@@ -62,13 +76,11 @@ impl Formatter {
             let cur_kind = node_kind(&nodes[i]);
 
             if cur_kind == "comment" {
-                // Look ahead to find the next non-comment node kind
                 let next_real_kind = nodes[i..].iter()
                     .find(|n| node_kind(n) != "comment")
                     .map(node_kind)
                     .unwrap_or("");
 
-                // Add spacing before the comment group (based on prev and upcoming node)
                 if !prev_kind.is_empty() && !next_real_kind.is_empty() {
                     let blank_lines = spacing_between(prev_kind, next_real_kind);
                     for _ in 0..blank_lines {
@@ -76,15 +88,49 @@ impl Formatter {
                     }
                 }
 
-                // Emit all consecutive comments
                 while i < nodes.len() && node_kind(&nodes[i]) == "comment" {
                     self.format_node(&nodes[i]);
                     i += 1;
                 }
 
-                // Mark prev as "comment" so next real node adds no extra spacing
                 prev_kind = "comment";
                 continue;
+            }
+
+            // Check if this node is immediately followed by a comment (inline comment)
+            if i + 1 < nodes.len() && node_kind(&nodes[i + 1]) == "comment" {
+                let line = self.format_to_string(&nodes[i]);
+                if !line.contains('\n') {
+                    // Collect consecutive (node, comment) pairs into a group
+                    let mut pairs: Vec<(String, String)> = Vec::new();
+                    let mut j = i;
+                    loop {
+                        let l = if j == i {
+                            line.clone()
+                        } else {
+                            let s = self.format_to_string(&nodes[j]);
+                            if s.contains('\n') { break; }
+                            s
+                        };
+                        let c = if let Node::Comment(c) = &nodes[j + 1] { c.clone() } else { break };
+                        pairs.push((l, c));
+                        j += 2;
+                        if j >= nodes.len() || node_kind(&nodes[j]) == "comment" || j + 1 >= nodes.len() || node_kind(&nodes[j + 1]) != "comment" {
+                            break;
+                        }
+                    }
+
+                    if !prev_kind.is_empty() && prev_kind != "comment" {
+                        let blank_lines = spacing_between(prev_kind, cur_kind);
+                        for _ in 0..blank_lines { self.output.push('\n'); }
+                    }
+
+                    emit_aligned_comment_pairs(&mut self.output, &pairs);
+
+                    prev_kind = cur_kind;
+                    i = j;
+                    continue;
+                }
             }
 
             if !prev_kind.is_empty() && prev_kind != "comment" {
@@ -100,6 +146,53 @@ impl Formatter {
         }
 
         self.output.trim_end().to_string()
+    }
+
+    fn format_to_string(&mut self, node: &Node) -> String {
+        let saved = std::mem::take(&mut self.output);
+        self.format_node(node);
+        let mut result = std::mem::take(&mut self.output);
+        self.output = saved;
+        if result.ends_with('\n') {
+            result.pop();
+        }
+        result
+    }
+
+    fn format_stmts_aligned(&mut self, nodes: &[Node]) {
+        let mut i = 0;
+        while i < nodes.len() {
+            if i + 1 < nodes.len()
+                && node_kind(&nodes[i]) != "comment"
+                && node_kind(&nodes[i + 1]) == "comment"
+            {
+                let line = self.format_to_string(&nodes[i]);
+                if !line.contains('\n') {
+                    let mut pairs: Vec<(String, String)> = Vec::new();
+                    let mut j = i;
+                    loop {
+                        let l = if j == i {
+                            line.clone()
+                        } else {
+                            let s = self.format_to_string(&nodes[j]);
+                            if s.contains('\n') { break; }
+                            s
+                        };
+                        let c = if let Node::Comment(c) = &nodes[j + 1] { c.clone() } else { break };
+                        pairs.push((l, c));
+                        j += 2;
+                        if j >= nodes.len() || node_kind(&nodes[j]) == "comment" || j + 1 >= nodes.len() || node_kind(&nodes[j + 1]) != "comment" {
+                            break;
+                        }
+                    }
+                    emit_aligned_comment_pairs(&mut self.output, &pairs);
+                    i = j;
+                    continue;
+                }
+            }
+            self.format_node(&nodes[i]);
+            i += 1;
+        }
     }
 
     fn format_node(&mut self, node: &Node) {
@@ -215,17 +308,29 @@ impl Formatter {
 
                 let max_key_len = fields.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
 
-                for (i, (key, ty, comment)) in fields.iter().enumerate() {
+                // Build each field line (without comment) to find max width for comment alignment
+                let indent_str = self.current_indent();
+                let field_lines: Vec<(String, Option<String>)> = fields.iter().enumerate().map(|(i, (key, ty, comment))| {
                     let padded_key = format!("{:<width$}", key, width = max_key_len);
                     let type_str = self.node_to_string(ty);
-                    self.output.push_str(&self.push_indent(""));
-                    self.output.push_str(&padded_key);
-                    self.output.push_str(": ");
-                    self.output.push_str(&type_str);
+                    let mut line = format!("{}{}: {}", indent_str, padded_key, type_str);
                     if i < fields.len() - 1 {
-                        self.output.push(',');
+                        line.push(',');
                     }
+                    (line, comment.clone())
+                }).collect();
+
+                let max_line_len = field_lines.iter()
+                    .filter(|(_, c)| c.is_some())
+                    .map(|(l, _)| l.len())
+                    .max()
+                    .unwrap_or(0);
+
+                for (line, comment) in &field_lines {
+                    self.output.push_str(line);
                     if let Some(c) = comment {
+                        let padding = max_line_len - line.len();
+                        for _ in 0..padding { self.output.push(' '); }
                         self.output.push_str("  //");
                         self.output.push_str(c);
                     }
@@ -318,11 +423,7 @@ impl Formatter {
             Node::Block(statements) => {
                 self.output.push_str("{\n");
                 self.indent_level += 1;
-
-                for stmt in statements {
-                    self.format_node(stmt);
-                }
-
+                self.format_stmts_aligned(statements);
                 self.indent_level -= 1;
                 self.output.push_str(&self.push_indent("}\n"));
             }
@@ -381,10 +482,10 @@ impl Formatter {
                     self.output.push(' ');
                     self.output.push_str(&self.node_to_string(e));
                 }
-                self.output.push_str(";\n");
+                self.output.push('\n');
             }
             Node::Break => {
-                self.output.push_str(&self.push_indent("break;\n"));
+                self.output.push_str(&self.push_indent("break\n"));
             }
             Node::Match { expr, arms } => {
                 self.output.push_str(&self.push_indent("match "));
@@ -406,7 +507,7 @@ impl Formatter {
             Node::Assert(expr) => {
                 self.output.push_str(&self.push_indent("assert "));
                 self.output.push_str(&self.node_to_string(expr));
-                self.output.push_str(";\n");
+                self.output.push('\n');
             }
             Node::Comment(c) => {
                 self.output.push_str(&self.push_indent("//"));
@@ -416,7 +517,7 @@ impl Formatter {
             _ => {
                 self.output.push_str(&self.push_indent(""));
                 self.output.push_str(&self.node_to_string(node));
-                self.output.push_str(";\n");
+                self.output.push('\n');
             }
         }
     }
