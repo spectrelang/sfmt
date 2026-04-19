@@ -379,6 +379,12 @@ impl Parser {
             self.skip_comments();
 
             fields.push((field_name, field_type));
+
+            if self.match_token(&Token::Comma) {
+                self.skip_comments();
+            } else if self.current() != Some(&Token::RBrace) {
+                break;
+            }
         }
 
         self.expect_token(Token::RBrace)?;
@@ -579,8 +585,28 @@ impl Parser {
             Some(Token::LBrace) => self.parse_block(),
             _ => {
                 let expr = self.parse_expr()?;
-                self.match_token(&Token::Semicolon);
-                Ok(expr)
+                let op = match self.current() {
+                    Some(Token::Equal) => Some("="),
+                    Some(Token::PlusEq) => Some("+="),
+                    Some(Token::MinusEq) => Some("-="),
+                    Some(Token::StarEq) => Some("*="),
+                    Some(Token::SlashEq) => Some("/="),
+                    _ => None,
+                };
+                if let Some(op_str) = op {
+                    let op_str = op_str.to_string();
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    self.match_token(&Token::Semicolon);
+                    Ok(Node::Binary {
+                        op: op_str,
+                        left: Box::new(expr),
+                        right: Box::new(value),
+                    })
+                } else {
+                    self.match_token(&Token::Semicolon);
+                    Ok(expr)
+                }
             }
         }
     }
@@ -947,6 +973,27 @@ impl Parser {
 
                 self.expect_token(Token::RBrace)?;
                 Ok(Node::Struct(fields))
+            }
+            Some(Token::Use) => {
+                self.advance();
+                if self.match_token(&Token::LParen) {
+                    let mut args = Vec::new();
+                    while self.current() != Some(&Token::RParen)
+                        && self.current() != Some(&Token::Eof)
+                    {
+                        if !args.is_empty() {
+                            self.expect_token(Token::Comma)?;
+                        }
+                        args.push(self.parse_expr()?);
+                    }
+                    self.expect_token(Token::RParen)?;
+                    Ok(Node::Call {
+                        func: Box::new(Node::Ident("use".to_string())),
+                        args,
+                    })
+                } else {
+                    Ok(Node::Ident("use".to_string()))
+                }
             }
             Some(Token::At) => {
                 self.advance();

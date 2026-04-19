@@ -26,8 +26,21 @@ impl Formatter {
     }
 
     pub fn format(&mut self, nodes: &[Node]) -> String {
-        for node in nodes {
+        let mut prev_was_fn = false;
+        for (i, node) in nodes.iter().enumerate() {
+            let is_fn = matches!(node, Node::FnDecl { .. });
+
+            if i > 0 {
+                if is_fn && prev_was_fn {
+                    self.output.push('\n');
+                } else if is_fn || prev_was_fn {
+                    self.output.push('\n');
+                    self.output.push('\n');
+                }
+            }
+
             self.format_node(node);
+            prev_was_fn = is_fn;
         }
         self.output.trim_end().to_string()
     }
@@ -58,7 +71,22 @@ impl Formatter {
 
                 if let Some(val_node) = value {
                     line.push_str(" = ");
-                    line.push_str(&self.node_to_string(val_node));
+                    if let Node::List(elements) = val_node.as_ref() {
+                        self.output.push_str(&line);
+                        self.output.push_str("[\n");
+                        for (i, elem) in elements.iter().enumerate() {
+                            self.output.push_str(&self.push_indent("    "));
+                            self.output.push_str(&self.node_to_string(elem));
+                            if i < elements.len() - 1 {
+                                self.output.push(',');
+                            }
+                            self.output.push('\n');
+                        }
+                        self.output.push_str(&self.push_indent("]\n"));
+                        return;
+                    } else {
+                        line.push_str(&self.node_to_string(val_node));
+                    }
                 }
 
                 line.push('\n');
@@ -322,7 +350,9 @@ impl Formatter {
                 self.output.push('\n');
             }
             _ => {
-                self.output.push_str(&format!("{:?}", node));
+                self.output.push_str(&self.push_indent(""));
+                self.output.push_str(&self.node_to_string(node));
+                self.output.push_str(";\n");
             }
         }
     }
