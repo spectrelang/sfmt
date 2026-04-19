@@ -2,6 +2,35 @@ use crate::parser::Node;
 
 const INDENT: &str = "    "; // 4 spaces
 
+fn node_kind(node: &Node) -> &'static str {
+    match node {
+        Node::FnDecl { .. } => "fn",
+        Node::TypeDecl { .. } | Node::UnionDecl { .. } | Node::EnumDecl { .. } => "type",
+        Node::Comment(_) => "comment",
+        Node::VarDecl { value: Some(v), .. } => {
+            if let Node::Call { func, .. } = v.as_ref() {
+                if let Node::Ident(n) = func.as_ref() {
+                    if n == "use" {
+                        return "use-val";
+                    }
+                }
+            }
+            "val"
+        }
+        _ => "val",
+    }
+}
+
+fn spacing_between(prev: &str, cur: &str) -> usize {
+    match (prev, cur) {
+        ("fn", "fn") => 1,
+        ("fn", _) | (_, "fn") => 2,
+        ("type", k) | (k, "type") if k != "type" => 1,
+        ("use-val", "val") | ("val", "use-val") => 1,
+        _ => 0,
+    }
+}
+
 pub struct Formatter {
     indent_level: usize,
     output: String,
@@ -26,22 +55,50 @@ impl Formatter {
     }
 
     pub fn format(&mut self, nodes: &[Node]) -> String {
-        let mut prev_was_fn = false;
-        for (i, node) in nodes.iter().enumerate() {
-            let is_fn = matches!(node, Node::FnDecl { .. });
+        let mut prev_kind = "";
+        let mut i = 0;
 
-            if i > 0 {
-                if is_fn && prev_was_fn {
-                    self.output.push('\n');
-                } else if is_fn || prev_was_fn {
-                    self.output.push('\n');
+        while i < nodes.len() {
+            let cur_kind = node_kind(&nodes[i]);
+
+            if cur_kind == "comment" {
+                // Look ahead to find the next non-comment node kind
+                let next_real_kind = nodes[i..].iter()
+                    .find(|n| node_kind(n) != "comment")
+                    .map(node_kind)
+                    .unwrap_or("");
+
+                // Add spacing before the comment group (based on prev and upcoming node)
+                if !prev_kind.is_empty() && !next_real_kind.is_empty() {
+                    let blank_lines = spacing_between(prev_kind, next_real_kind);
+                    for _ in 0..blank_lines {
+                        self.output.push('\n');
+                    }
+                }
+
+                // Emit all consecutive comments
+                while i < nodes.len() && node_kind(&nodes[i]) == "comment" {
+                    self.format_node(&nodes[i]);
+                    i += 1;
+                }
+
+                // Mark prev as "comment" so next real node adds no extra spacing
+                prev_kind = "comment";
+                continue;
+            }
+
+            if !prev_kind.is_empty() && prev_kind != "comment" {
+                let blank_lines = spacing_between(prev_kind, cur_kind);
+                for _ in 0..blank_lines {
                     self.output.push('\n');
                 }
             }
 
-            self.format_node(node);
-            prev_was_fn = is_fn;
+            self.format_node(&nodes[i]);
+            prev_kind = cur_kind;
+            i += 1;
         }
+
         self.output.trim_end().to_string()
     }
 
@@ -156,15 +213,19 @@ impl Formatter {
 
                 self.indent_level += 1;
 
-                let max_key_len = fields.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+                let max_key_len = fields.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
 
-                for (key, ty) in fields {
+                for (key, ty, comment) in fields {
                     let padded_key = format!("{:<width$}", key, width = max_key_len);
                     let type_str = self.node_to_string(ty);
                     self.output.push_str(&self.push_indent(""));
                     self.output.push_str(&padded_key);
                     self.output.push_str(": ");
                     self.output.push_str(&type_str);
+                    if let Some(c) = comment {
+                        self.output.push_str("  //");
+                        self.output.push_str(c);
+                    }
                     self.output.push('\n');
                 }
 
@@ -345,7 +406,7 @@ impl Formatter {
                 self.output.push_str(";\n");
             }
             Node::Comment(c) => {
-                self.output.push_str(&self.push_indent("// "));
+                self.output.push_str(&self.push_indent("//"));
                 self.output.push_str(c);
                 self.output.push('\n');
             }

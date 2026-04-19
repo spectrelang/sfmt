@@ -20,7 +20,7 @@ pub enum Node {
     TypeDecl {
         is_pub: bool,
         name: String,
-        fields: Vec<(String, Node)>,
+        fields: Vec<(String, Node, Option<String>)>,
     },
     UnionDecl {
         is_pub: bool,
@@ -148,7 +148,11 @@ impl Parser {
         let mut nodes = Vec::new();
 
         loop {
-            self.skip_comments();
+            while let Some(Token::Comment(c)) = self.current() {
+                let c = c.clone();
+                self.advance();
+                nodes.push(Node::Comment(c));
+            }
             if self.current() == Some(&Token::Eof) {
                 break;
             }
@@ -376,14 +380,30 @@ impl Parser {
 
             self.expect_token(Token::Colon)?;
             let field_type = self.parse_type()?;
-            self.skip_comments();
 
-            fields.push((field_name, field_type));
+            // Comma may appear before inline comment (field: type, // comment)
+            // or comment may appear directly after type (field: type // comment)
+            let had_comma = self.match_token(&Token::Comma);
 
-            if self.match_token(&Token::Comma) {
-                self.skip_comments();
-            } else if self.current() != Some(&Token::RBrace) {
-                break;
+            let inline_comment = if let Some(Token::Comment(c)) = self.current() {
+                let c = c.clone();
+                self.advance();
+                Some(c)
+            } else {
+                None
+            };
+
+            fields.push((field_name, field_type, inline_comment));
+
+            if !had_comma {
+                if self.current() == Some(&Token::RBrace) {
+                    // done
+                } else {
+                    // try consuming a comma if present (no-comma style)
+                    if !self.match_token(&Token::Comma) && self.current() != Some(&Token::RBrace) {
+                        break;
+                    }
+                }
             }
         }
 
@@ -617,7 +637,12 @@ impl Parser {
         let mut statements = Vec::new();
 
         while self.current() != Some(&Token::RBrace) && self.current() != Some(&Token::Eof) {
-            self.skip_comments();
+            if let Some(Token::Comment(c)) = self.current() {
+                let c = c.clone();
+                self.advance();
+                statements.push(Node::Comment(c));
+                continue;
+            }
             if self.current() == Some(&Token::RBrace) {
                 break;
             }
