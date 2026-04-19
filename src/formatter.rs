@@ -215,13 +215,16 @@ impl Formatter {
 
                 let max_key_len = fields.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
 
-                for (key, ty, comment) in fields {
+                for (i, (key, ty, comment)) in fields.iter().enumerate() {
                     let padded_key = format!("{:<width$}", key, width = max_key_len);
                     let type_str = self.node_to_string(ty);
                     self.output.push_str(&self.push_indent(""));
                     self.output.push_str(&padded_key);
                     self.output.push_str(": ");
                     self.output.push_str(&type_str);
+                    if i < fields.len() - 1 {
+                        self.output.push(',');
+                    }
                     if let Some(c) = comment {
                         self.output.push_str("  //");
                         self.output.push_str(c);

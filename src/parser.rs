@@ -381,10 +381,10 @@ impl Parser {
             self.expect_token(Token::Colon)?;
             let field_type = self.parse_type()?;
 
-            // Comma may appear before inline comment (field: type, // comment)
-            // or comment may appear directly after type (field: type // comment)
+            // Consume comma (present between all fields except the last)
             let had_comma = self.match_token(&Token::Comma);
 
+            // Capture inline comment after comma (or directly after type on last field)
             let inline_comment = if let Some(Token::Comment(c)) = self.current() {
                 let c = c.clone();
                 self.advance();
@@ -395,15 +395,8 @@ impl Parser {
 
             fields.push((field_name, field_type, inline_comment));
 
-            if !had_comma {
-                if self.current() == Some(&Token::RBrace) {
-                    // done
-                } else {
-                    // try consuming a comma if present (no-comma style)
-                    if !self.match_token(&Token::Comma) && self.current() != Some(&Token::RBrace) {
-                        break;
-                    }
-                }
+            if !had_comma && self.current() != Some(&Token::RBrace) {
+                break;
             }
         }
 
